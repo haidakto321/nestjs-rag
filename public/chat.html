@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>nestjs-rag chat</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0 auto; max-width: 1100px; padding: 16px; }
+    form, .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+    input { flex: 1; min-width: 160px; padding: 6px; }
+    textarea { flex: 1 1 100%; min-height: 64px; padding: 6px; }
+    .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+    .panel { border: 1px solid #8886; border-radius: 8px; padding: 12px; }
+    .answer { white-space: pre-wrap; min-height: 80px; }
+    .meta { font-size: 12px; opacity: 0.8; }
+    .error { color: #d32f2f; }
+  </style>
+</head>
+<body>
+  <h1>nestjs-rag chat</h1>
+  <form id="login">
+    <input id="email" type="email" placeholder="email" autocomplete="username" required />
+    <input id="password" type="password" placeholder="password" autocomplete="current-password" required />
+    <button type="submit">Log in</button>
+    <span id="login-status" class="meta">not logged in</span>
+  </form>
+  <div class="row">
+    <textarea id="question" placeholder="Ask about your documents"></textarea>
+    <button id="ask" type="button" disabled>Ask both</button>
+    <button id="cancel" type="button" disabled>Cancel</button>
+  </div>
+  <div class="panels">
+    <section class="panel" id="panel-rag">
+      <h2>Fixed RAG</h2>
+      <div class="answer"></div>
+      <ol class="sources"></ol>
+      <div class="meta"></div>
+    </section>
+    <section class="panel" id="panel-agent">
+      <h2>Agent (tool calling)</h2>
+      <div class="answer"></div>
+      <ol class="sources"></ol>
+      <div class="meta"></div>
+    </section>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Plain JS on purpose: this page is a test harness for the gateway, not a frontend lesson.
+    // Model output and document titles only ever go through textContent, never innerHTML.
+    let token = null;
+
+    class Panel {
+      constructor(mode) {
+        this.mode = mode;
+        const root = document.getElementById(`panel-${mode}`);
+        this.answer = root.querySelector('.answer');
+        this.sources = root.querySelector('.sources');
+        this.meta = root.querySelector('.meta');
+        this.socket = null;
+        this.started = 0;
+      }
+
+      connect() {
+        this.socket?.disconnect();
+        this.socket = io('/chat', { auth: { token }, transports: ['websocket'] });
+        this.socket.on('connect_error', (err) => this.log(`connect error: ${err.message}`, true));
+        this.socket.on('sources', ({ items }) => {
+          for (const item of items) {
+            const li = document.createElement('li');
+            li.value = item.n;
+            li.textContent = item.headingPath ? `${item.title} > ${item.headingPath}` : item.title;
+            this.sources.append(li);
+          }
+        });
+        this.socket.on('token', ({ text }) => {
+          this.answer.textContent += text;
+        });
+        this.socket.on('toolCall', ({ name, input }) => this.log(`tool ${name}(${JSON.stringify(input)})`));
+        this.socket.on('done', ({ finishReason, usage }) => {
+          const tokens = usage ? `, tokens in/out ${usage.inputTokens}/${usage.outputTokens}` : '';
+          this.log(`done: ${finishReason}${tokens}`);
+        });
+        this.socket.on('error', ({ message }) => this.log(`error: ${message}`, true));
+      }
+
+      ask(question) {
+        this.answer.textContent = '';
+        this.sources.replaceChildren();
+        this.meta.replaceChildren();
+        this.started = performance.now();
+        this.socket.emit('ask', { question, mode: this.mode });
+      }
+
+      cancel() {
+        this.socket.emit('cancel');
+      }
+
+      log(text, isError = false) {
+        const line = document.createElement('div');
+        if (isError) line.className = 'error';
+        const seconds = this.started ? ((performance.now() - this.started) / 1000).toFixed(1) : '0.0';
+        line.textContent = `${seconds}s ${text}`;
+        this.meta.append(line);
+      }
+    }
+
+    const panels = [new Panel('rag'), new Panel('agent')];
+    const askButton = document.getElementById('ask');
+    const cancelButton = document.getElementById('cancel');
+
+    document.getElementById('login').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const status = document.getElementById('login-status');
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: document.getElementById('email').value,
+          password: document.getElementById('password').value,
+        }),
+      });
+      if (!res.ok) {
+        status.textContent = `login failed (${res.status})`;
+        return;
+      }
+      token = (await res.json()).accessToken;
+      status.textContent = 'logged in';
+      panels.forEach((panel) => panel.connect());
+      askButton.disabled = false;
+      cancelButton.disabled = false;
+    });
+
+    askButton.addEventListener('click', () => {
+      const question = document.getElementById('question').value.trim();
+      if (question) panels.forEach((panel) => panel.ask(question));
+    });
+
+    cancelButton.addEventListener('click', () => panels.forEach((panel) => panel.cancel()));
+  </script>
+</body>
+</html>
