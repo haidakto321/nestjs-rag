@@ -46,6 +46,11 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | 2026-10-14 | 3 | Live check with real Ollama: startup logs `Embedding model reachable (768 dims)`; uploading the 593-line spec gave 40 chunks with correct heading trails in **25 s** | the upload is synchronous, so the HTTP request waits for all embeddings (cold model load included). Fine for a sandbox; a real app would queue it (spec stretch item: BullMQ) |
 | 2026-10-14 | 3 | Live "Ollama down" check by pointing `OLLAMA_BASE_URL` at a dead port (not by stopping the user's Ollama): startup warns and continues, upload answers 503, listing still 200 | |
 | 2026-10-14 | 3 | Installed Ollama models are `nomic-embed-text` and **`qwen3:4b`**; the spec default `CHAT_MODEL=qwen3:8b` is not pulled | decide in Phase 5: set `CHAT_MODEL=qwen3:4b` in `.env`, or pull 8b |
+| 2026-10-14 | 4 | Search SQL lives in `SearchRepository` (`dataSource.query`); the visibility rule is part of every `WHERE` (`readableSql`) | TypeORM has a `vector` column type but no similarity API: this is where the ORM stops. Filtering after the query would leak through `topK` counts and timing |
+| 2026-10-14 | 4 | The vector `ORDER BY` is the distance only (no `, c.id` tie-break), unlike FTS | an extra sort key stops Postgres from using the HNSW index (caught while writing the plan) |
+| 2026-10-14 | 4 | `/search/compare` embeds once and runs the modes one after another | `Promise.all` would be easy in Node, but parallel runs share the DB and blur the per-mode timings |
+| 2026-10-14 | 4 | `CompareQueryDto = OmitType(SearchQueryDto, ['mode'])` | Swagger mapped types copy validation rules, transforms and default values |
+| 2026-10-14 | 4 | Live `/search/compare` with real Ollama (spec + notes uploaded, 51 chunks): SQL per mode 1-9 ms, query embedding about 2 s (it dominates). Exact tokens (`JWT_TTL_SECONDS`, `HNSW iterative scan`): FTS, vector and hybrid agree on the top hit. Paraphrase ("how do I stop a user from making themselves admin"): **FTS returns nothing**, vector and hybrid find the users / auth sections | same lesson as springboot-rag: exact codes favour FTS, paraphrases favour vector, hybrid covers both |
 
 ## Risks checked
 
@@ -56,7 +61,7 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | R3 ESM + TypeORM circular relations | not reachable: no relations |
 | R4 vector round-trip | **PASS** - TypeORM 1.1 writes `number[]` into `vector(768)` with no transformer (e2e: chunks have embeddings; a 767-length array is rejected by Postgres) |
 | R5 Docker 29 + Testcontainers | **PASS** - Docker server 29.4.0, `@testcontainers/postgresql` 12.2.1 started `pgvector/pgvector:pg16` with no API-version pin (springboot-rag's docker-java needed `api.version=1.44`; Node Testcontainers uses a different client) |
-| R6 HNSW + filter | |
+| R6 HNSW + filter | **Handled.** pgvector is 0.8.2, so `SET LOCAL hnsw.iterative_scan = strict_order` (inside an explicit transaction) is supported. On the dev DB (40 chunks) the planner picks seq scan + sort, even with `enable_seqscan=off`; with `enable_sort=off` too it shows `Nested Loop -> Index Scan using chunks_embedding_hnsw_idx`, so the query shape can use HNSW once the table is large. e2e "fills topK when most nearby chunks are hidden" passes (60 hidden chunks, topK 3) |
 | R7 AI SDK 7 names | `instructions`, `isStepCount`, `MockLanguageModelV4` (read from types) |
 | R8 qwen3 reasoning | |
 
@@ -88,3 +93,6 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | Upload size limit | `spring.servlet.multipart.max-file-size` | `MulterModule.registerAsync({ limits: { fileSize } })` -> 413 from multer |
 | Transactions | `@Transactional` (proxy, implicit boundary) | `dataSource.transaction(async (manager) => ...)`: explicit boundary, every write must go through `manager` |
 | `OR` in queries | `Specification.or(...)` / JPQL | TypeORM `find({ where: [a, b] })`: an array of conditions means OR |
+| Raw SQL next to the ORM | `JdbcTemplate` beside JPA repositories | `dataSource.query(sql, params)` with `$1` placeholders; rows come back as plain objects in snake_case, mapped by hand |
+| Query params to typed DTO | `@RequestParam int topK` converts automatically | query strings stay strings: `@Type(() => Number)` + `transform: true` before `@IsInt()` |
+| Running independent calls | sequential by default; `CompletableFuture` to go parallel | parallel is the easy default (`Promise.all`); `/search/compare` chooses sequential on purpose |

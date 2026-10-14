@@ -18,6 +18,7 @@ import { aiConfig, appConfig, authConfig, dbConfig, uploadConfig } from './confi
 import { validateEnv } from './config/env.schema.js';
 import { buildDataSourceOptions } from './database/typeorm-options.js';
 import { DocumentsModule } from './documents/documents.module.js';
+import { SearchModule } from './search/search.module.js';
 import { UsersModule } from './users/users.module.js';
 
 @Module({
@@ -44,6 +45,7 @@ import { UsersModule } from './users/users.module.js';
     UsersModule,
     AuthModule,
     DocumentsModule,
+    SearchModule,
   ],
   controllers: [AppController],
   providers: [
