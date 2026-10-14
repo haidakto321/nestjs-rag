@@ -8,6 +8,7 @@ import {
 import { ConfigModule, type ConfigType } from '@nestjs/config';
 import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AiModule } from './ai/ai.module.js';
 import { AppController } from './app.controller.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AppExceptionFilter } from './common/filters/app-exception.filter.js';
@@ -16,6 +17,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware.j
 import { aiConfig, appConfig, authConfig, dbConfig, uploadConfig } from './config/app.config.js';
 import { validateEnv } from './config/env.schema.js';
 import { buildDataSourceOptions } from './database/typeorm-options.js';
+import { DocumentsModule } from './documents/documents.module.js';
 import { UsersModule } from './users/users.module.js';
 
 @Module({
@@ -34,8 +36,14 @@ import { UsersModule } from './users/users.module.js';
         migrationsRun: true,
       }),
     }),
+    AiModule.forRootAsync({
+      isGlobal: true,
+      inject: [aiConfig.KEY],
+      useFactory: (ai: ConfigType<typeof aiConfig>) => ai,
+    }),
     UsersModule,
     AuthModule,
+    DocumentsModule,
   ],
   controllers: [AppController],
   providers: [

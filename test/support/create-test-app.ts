@@ -1,12 +1,20 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test, type TestingModuleBuilder } from '@nestjs/testing';
+import { EMBEDDING_PROVIDER } from '../../src/ai/ai.tokens.js';
+import { OllamaHealthCheck } from '../../src/ai/ollama-health.check.js';
 import { AppModule } from '../../src/app.module.js';
+import { FakeEmbeddingProvider } from './fake-embedding.provider.js';
 
 export type Customize = (builder: TestingModuleBuilder) => TestingModuleBuilder;
 
-// Boots the real AppModule against the Testcontainers database.
+// Boots the real AppModule against the Testcontainers database, with Ollama replaced by fakes.
+// A customize callback can override more providers; a later override of the same token wins.
 export async function createTestApp(customize?: Customize): Promise<INestApplication> {
-  let builder = Test.createTestingModule({ imports: [AppModule] });
+  let builder = Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(EMBEDDING_PROVIDER)
+    .useValue(new FakeEmbeddingProvider())
+    .overrideProvider(OllamaHealthCheck)
+    .useValue({ onModuleInit: () => undefined });
   if (customize) builder = customize(builder);
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication({ logger: ['error'] });
