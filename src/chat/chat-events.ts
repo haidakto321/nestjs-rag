@@ -1,4 +1,4 @@
-export const CHAT_MODES = ['rag'] as const;
+export const CHAT_MODES = ['rag', 'agent'] as const;
 export type ChatMode = (typeof CHAT_MODES)[number];
 
 export interface ChatTurn {

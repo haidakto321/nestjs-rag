@@ -1,5 +1,5 @@
 import { ServiceUnavailableException } from '@nestjs/common';
-import { mockChatModel, textParts } from '../../test/support/mock-chat-model.js';
+import { mockChatModel, textParts, toolCallParts } from '../../test/support/mock-chat-model.js';
 import type { AuthUser } from '../auth/auth-user.js';
 import type { SearchService } from '../search/search.service.js';
 import type { ChunkMatch } from '../search/search.types.js';
@@ -85,5 +85,41 @@ describe('ChatService (rag mode)', () => {
     await expect(collect(ask(new ChatService(failing, mockChatModel([textParts(['x'])]))))).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
+  });
+});
+
+describe('ChatService (agent mode)', () => {
+  const askAgent = (service: ChatService) =>
+    service.ask({ user, question: 'Where is the zebracorn?', history: [], mode: 'agent', signal: new AbortController().signal });
+
+  it('lets the model call searchDocuments, then streams the cited answer', async () => {
+    const { search, retrieve } = fakeSearch(matches);
+    const model = mockChatModel([toolCallParts('searchDocuments', { query: 'zebracorn' }), textParts(['It is in [1].'])]);
+    const events = await collect(askAgent(new ChatService(search, model)));
+    expect(events.map((e) => e.type)).toEqual(['toolCall', 'sources', 'token', 'done']);
+    expect(events[0]).toEqual({ type: 'toolCall', name: 'searchDocuments', input: { query: 'zebracorn' } });
+    expect(events[1]).toMatchObject({ type: 'sources', items: [{ n: 1 }, { n: 2 }] });
+    expect(retrieve).toHaveBeenCalledWith(user, 'zebracorn', 5);
+    expect(JSON.stringify(model.doStreamCalls[1].prompt)).toContain('[1] Guide > Setup');
+  });
+
+  it('numbers sources across several tool calls', async () => {
+    const model = mockChatModel([
+      toolCallParts('searchDocuments', { query: 'a' }),
+      toolCallParts('searchDocuments', { query: 'b' }),
+      textParts(['done']),
+    ]);
+    const events = await collect(askAgent(new ChatService(fakeSearch(matches).search, model)));
+    const numbers = events
+      .filter((e): e is Extract<ChatEvent, { type: 'sources' }> => e.type === 'sources')
+      .flatMap((e) => e.items.map((item) => item.n));
+    expect(numbers).toEqual([1, 2, 3, 4]);
+  });
+
+  it('stops after 3 model steps even if the model keeps calling tools', async () => {
+    const model = mockChatModel([toolCallParts('searchDocuments', { query: 'again' })]);
+    const events = await collect(askAgent(new ChatService(fakeSearch(matches).search, model)));
+    expect(model.doStreamCalls).toHaveLength(3);
+    expect(events.at(-1)).toMatchObject({ type: 'done', finishReason: 'tool-calls' });
   });
 });

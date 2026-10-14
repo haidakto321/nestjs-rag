@@ -1,12 +1,14 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { streamText, type LanguageModel, type TextStreamPart, type ToolSet } from 'ai';
+import { isStepCount, streamText, type LanguageModel, type TextStreamPart, type ToolSet } from 'ai';
 import { CHAT_MODEL } from '../ai/ai.tokens.js';
 import type { AuthUser } from '../auth/auth-user.js';
 import { SearchService } from '../search/search.service.js';
+import { buildAgentTools } from './agent-tools.js';
 import type { ChatEvent, ChatMode, ChatTurn } from './chat-events.js';
-import { buildMessages, INSTRUCTIONS, toSources } from './prompt.js';
+import { AGENT_INSTRUCTIONS, buildAgentMessages, buildMessages, INSTRUCTIONS, toSources } from './prompt.js';
 
 export const CONTEXT_CHUNKS = 5;
+export const MAX_AGENT_STEPS = 3;
 export const NO_MATCH_ANSWER =
   'No document you can read matches this question, so I cannot answer it from your documents.';
 
@@ -30,6 +32,10 @@ export class ChatService {
   ) {}
 
   async *ask(input: AskInput): AsyncGenerator<ChatEvent> {
+    if (input.mode === 'agent') {
+      yield* this.askAgent(input);
+      return;
+    }
     const matches = await this.search.retrieve(input.user, input.question, CONTEXT_CHUNKS);
     yield { type: 'sources', items: toSources(matches) };
     if (matches.length === 0) {
@@ -47,10 +53,33 @@ export class ChatService {
     yield* this.relay(result.fullStream, input.signal);
   }
 
+  // The model decides when (and how often) to search. Sources found by the tool are queued and
+  // flushed when the stream reports the tool result, so numbering stays unique across calls.
+  private async *askAgent(input: AskInput): AsyncGenerator<ChatEvent> {
+    const queued: ChatEvent[] = [];
+    let nextNumber = 1;
+    const tools = buildAgentTools(this.search, input.user, (matches) => {
+      const first = nextNumber;
+      queued.push({ type: 'sources', items: toSources(matches, first) });
+      nextNumber += matches.length;
+      return first;
+    });
+    const result = streamText({
+      model: this.model,
+      instructions: AGENT_INSTRUCTIONS,
+      messages: buildAgentMessages(input.history, input.question),
+      tools,
+      stopWhen: isStepCount(MAX_AGENT_STEPS),
+      abortSignal: input.signal,
+    });
+    yield* this.relay(result.fullStream, input.signal, () => queued.splice(0));
+  }
+
   /** Maps AI SDK stream parts to ChatEvents. Reasoning is counted and dropped on purpose. */
   private async *relay<TOOLS extends ToolSet>(
     stream: AsyncIterable<TextStreamPart<TOOLS>>,
     signal: AbortSignal,
+    drain: () => ChatEvent[] = () => [],
   ): AsyncGenerator<ChatEvent> {
     let reasoningChars = 0;
     try {
@@ -61,6 +90,12 @@ export class ChatService {
             break;
           case 'reasoning-delta':
             reasoningChars += part.text.length;
+            break;
+          case 'tool-call':
+            yield { type: 'toolCall', name: part.toolName, input: part.input };
+            break;
+          case 'tool-result':
+            yield* drain();
             break;
           case 'abort':
             yield { type: 'done', finishReason: 'aborted' };

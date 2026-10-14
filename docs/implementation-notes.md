@@ -67,6 +67,12 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | 2026-10-14 | 5 | Live cancel: `cancel` after 5 tokens -> `done: aborted` at 1.0 s. Agent mode -> `error: mode must be one of the following values: rag` (expected until Phase 6). Ollama down (dead `OLLAMA_BASE_URL`): startup WARN, ask -> `error: Embedding service unavailable`, app keeps answering HTTP | |
 | 2026-10-14 | 5 | Seen live, not changed: source labels repeat the title ("Implementation notes - nestjs-rag > Implementation notes - nestjs-rag > Decisions ...") | the chunker's `headingPath` starts with the H1, which is also the document title. Cosmetic, plus a few prompt tokens per passage |
 | 2026-10-14 | 5 | Seen live, not changed: Ollama ran `qwen3:4b` with `context_length 4096`; this question used 1483 prompt tokens + 3000 output tokens | close to the limit; a longer prompt or reasoning trace can be cut without an error. `ai-sdk-ollama` can pass `num_ctx`; not in the spec, so not set |
+| 2026-10-14 | 6 | Agent tools are built per request by `buildAgentTools(search, user, onResult)`; the caller lives in the closure, the model only fills `{ query }` | the model picks WHAT to search, never WHOSE documents. Proven by mutation: making the tool search as an admin turned the e2e red (`'Bob secret'` leaked into the sources), restored -> green |
+| 2026-10-14 | 6 | AI SDK 7 shape: `tool({ description, inputSchema: z.object(...), execute })`, `streamText({ tools, stopWhen: isStepCount(3) })` | `stopWhen` caps model steps; a model that keeps calling tools ends with `done: tool-calls` after 3 calls (unit test) |
+| 2026-10-14 | 6 | Agent sources are numbered across tool calls (1-5, 6-10, ...) and emitted when the stream reports the `tool-result` | the tool's `execute` runs inside the SDK, not inside our generator, so it queues the `sources` event and the relay flushes it in stream order |
+| 2026-10-14 | 6 | The agent e2e was written after the implementation (plan order), so its permission assertion was proven by the mutation above, not by a red-first run | |
+| 2026-10-14 | 6 | **Live agent check (partial).** Standalone script (same `ai` + `ai-sdk-ollama`, one fake tool, `qwen3:4b`, think on): tool call at 24 s with `{"query":"PostgreSQL default port"}`, answer finished at 76 s. In the app over socket.io: tool call at 20.8 s (`"Postgres default port"`) and 123.6 s on a second run (`"Postgres port"`), `sources` about 2 s after each call (query embedding). Neither in-app run reached the answer: the first hit my 60 s client cap (disconnect -> abort, log `Dropped 3374 reasoning characters`), the second was stopped by Claude Code because the machine ran critically low on memory | qwen3:4b does call the tool on its own and rewrites the question into a search query. Not yet seen live: a full in-app agent answer, and the RAG vs agent refusal comparison on an unanswerable question |
+| 2026-10-14 | 6 | A first 30-minute "hang" in the live check was a bug in my smoke script (it never emitted `ask`), not in the app. Ollama's log showed no `/api/chat` request at all, which pointed to the client | |
 
 ## Risks checked
 
@@ -118,3 +124,14 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | Errors per transport | `@ControllerAdvice` for HTTP, `@MessageExceptionHandler` for STOMP | one `ExceptionFilter` per transport: `switchToHttp()` vs `switchToWs()` |
 | Bean / provider scope | `@Scope("request")` proxies only that bean | `Scope.REQUEST` bubbles up: every dependent becomes request-scoped too |
 | Static files | `src/main/resources/static` served by default | `ServeStaticModule.forRoot({ rootPath, serveRoot })`; not covered by the global guard |
+| LLM tool calling | Spring AI `@Tool` methods, or a hand-written loop | AI SDK `tool({ inputSchema: zod, execute })`; the SDK runs the call / result / next-step loop, `stopWhen` caps it |
+
+## Still open (spec section 13 stretch items, none built)
+
+- SSE variant of chat (`@Sse()` + RxJS) as a second adapter over `ChatService`.
+- `@nestjs/terminus` health checks.
+- A Standard Schema (zod) DTO variant on one controller, compared with class-validator.
+- Refresh tokens, logout / token revocation.
+- `@nestjs/throttler` rate limiting.
+- Queues (BullMQ + Redis) and a Nest monorepo with an ingest worker.
+- Reranker, Qdrant, GraphRAG, eval harness (already in springboot-rag).

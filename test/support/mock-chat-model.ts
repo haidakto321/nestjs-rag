@@ -29,6 +29,18 @@ export function textParts(texts: string[], reasoning?: string): StreamPart[] {
   ];
 }
 
+let toolCallCounter = 0;
+
+/** One model step that asks for a single tool call and stops with finishReason tool-calls. */
+export function toolCallParts(toolName: string, input: unknown): StreamPart[] {
+  toolCallCounter += 1;
+  return [
+    { type: 'stream-start', warnings: [] },
+    { type: 'tool-call', toolCallId: `call-${toolCallCounter}`, toolName, input: JSON.stringify(input) },
+    { type: 'finish', finishReason: { unified: 'tool-calls', raw: 'tool_calls' }, usage },
+  ];
+}
+
 /** Streams `steps` in order, one per model call; the last step repeats. */
 export function mockChatModel(steps: StreamPart[][], chunkDelayInMs: number | null = null): MockLanguageModelV4 {
   let call = 0;

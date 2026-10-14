@@ -6,7 +6,7 @@ import { NO_MATCH_ANSWER } from '../../src/chat/chat.service.js';
 import { registerAndLogin } from '../support/auth-helpers.js';
 import { createTestApp } from '../support/create-test-app.js';
 import { uploadText } from '../support/document-helpers.js';
-import { mockChatModel, textParts } from '../support/mock-chat-model.js';
+import { mockChatModel, textParts, toolCallParts } from '../support/mock-chat-model.js';
 import { resetDatabase } from '../support/reset-database.js';
 
 type Received = Array<[event: string, payload: unknown]>;
@@ -157,5 +157,44 @@ describe('chat gateway (e2e)', () => {
       ['token', { text: NO_MATCH_ANSWER }],
       ['done', { finishReason: 'no-context' }],
     ]);
+  });
+});
+
+describe('chat gateway agent mode (e2e)', () => {
+  let app: INestApplication;
+  let url: string;
+  const sockets: Socket[] = [];
+
+  beforeAll(async () => {
+    await resetDatabase();
+    const model = mockChatModel([toolCallParts('searchDocuments', { query: 'zebracorn' }), textParts(['See [1].'])]);
+    app = await createTestApp((b) => b.overrideProvider(CHAT_MODEL).useValue(model));
+    await app.listen(0, '127.0.0.1');
+    url = await app.getUrl();
+  });
+
+  afterEach(() => {
+    for (const socket of sockets.splice(0)) socket.disconnect();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('lets the model search, but only within what the caller may read', async () => {
+    const alice = await registerAndLogin(app, 'alice@test.io');
+    const bob = await registerAndLogin(app, 'bob@test.io');
+    await uploadText(app, alice, 'alice.md', '# Zebracorn care\nAlice feeds the zebracorn at noon.').expect(201);
+    await uploadText(app, bob, 'bob.md', '# Bob secret\nThe zebracorn password is hunter2.').expect(201);
+    const socket = connect(url, alice);
+    sockets.push(socket);
+    await connected(socket);
+    const done = untilDone(socket);
+    socket.emit('ask', { question: 'Tell me about the zebracorn', mode: 'agent' });
+    const received = await done;
+    expect(received.map(([event]) => event)).toEqual(['toolCall', 'sources', 'token', 'done']);
+    expect(received[0][1]).toEqual({ name: 'searchDocuments', input: { query: 'zebracorn' } });
+    const sources = received[1][1] as { items: Array<{ title: string }> };
+    expect(sources.items.map((item) => item.title)).toEqual(['Zebracorn care']);
   });
 });
