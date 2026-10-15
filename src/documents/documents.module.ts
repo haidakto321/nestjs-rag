@@ -12,9 +12,13 @@ import { DocumentEntity } from './entities/document.entity.js';
   imports: [
     TypeOrmModule.forFeature([DocumentEntity, ChunkEntity]),
     // Multer stops reading at the limit and Nest answers 413, before a huge file sits in memory.
+    // Browsers send the filename as UTF-8, but multer decodes it as latin1 unless told otherwise.
     MulterModule.registerAsync({
       inject: [uploadConfig.KEY],
-      useFactory: (upload: ConfigType<typeof uploadConfig>) => ({ limits: { fileSize: upload.maxBytes, files: 1 } }),
+      useFactory: (upload: ConfigType<typeof uploadConfig>) => ({
+        limits: { fileSize: upload.maxBytes, files: 1 },
+        defParamCharset: 'utf8',
+      }),
     }),
   ],
   controllers: [DocumentsController],

@@ -50,6 +50,13 @@ describe('documents upload (e2e)', () => {
     expect(res.body).toMatchObject({ title: 'meeting-notes', chunkCount: 1 });
   });
 
+  it('keeps a non-ASCII (Vietnamese) filename intact', async () => {
+    const res = await uploadText(app, alice, 'ghi-chú.txt', 'Nội dung cuộc họp.').expect(201);
+    expect(res.body.title).toBe('ghi-chú');
+    const [row] = await app.get(DataSource).query('SELECT filename FROM documents WHERE id = $1', [res.body.id]);
+    expect(row.filename).toBe('ghi-chú.txt');
+  });
+
   it('returns 409 for the same filename twice for one user, but allows it for another user', async () => {
     await uploadText(app, alice, 'notes.md', '# A\ntext').expect(201);
     const dup = await uploadText(app, alice, 'notes.md', '# B\ntext').expect(409);

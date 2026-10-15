@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { validateEnv } from './env.schema.js';
 
 const base = { JWT_SECRET: 'x'.repeat(32) };
@@ -19,6 +20,15 @@ describe('validateEnv', () => {
 
   it('rejects a JWT_SECRET shorter than 32 characters', () => {
     expect(() => validateEnv({ JWT_SECRET: 'short' })).toThrow(/at least 32/);
+  });
+
+  it('refuses to boot with the JWT_SECRET from .env.example, so a copied example is never live', () => {
+    const lines = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8').split(/\r?\n/);
+    const example = Object.fromEntries(
+      lines.filter((line) => line.includes('=')).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+    );
+    expect(example).toHaveProperty('JWT_SECRET');
+    expect(() => validateEnv(example)).toThrow(/JWT_SECRET/);
   });
 
   it('rejects a non-numeric port', () => {

@@ -68,11 +68,16 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | 2026-10-14 | 5 | Seen live, not changed: source labels repeat the title ("Implementation notes - nestjs-rag > Implementation notes - nestjs-rag > Decisions ...") | the chunker's `headingPath` starts with the H1, which is also the document title. Cosmetic, plus a few prompt tokens per passage |
 | 2026-10-14 | 5 | Seen live, not changed: Ollama ran `qwen3:4b` with `context_length 4096`; this question used 1483 prompt tokens + 3000 output tokens | close to the limit; a longer prompt or reasoning trace can be cut without an error. `ai-sdk-ollama` can pass `num_ctx`; not in the spec, so not set |
 | 2026-10-14 | 6 | Agent tools are built per request by `buildAgentTools(search, user, onResult)`; the caller lives in the closure, the model only fills `{ query }` | the model picks WHAT to search, never WHOSE documents. Proven by mutation: making the tool search as an admin turned the e2e red (`'Bob secret'` leaked into the sources), restored -> green |
-| 2026-10-14 | 6 | AI SDK 7 shape: `tool({ description, inputSchema: z.object(...), execute })`, `streamText({ tools, stopWhen: isStepCount(3) })` | `stopWhen` caps model steps; a model that keeps calling tools ends with `done: tool-calls` after 3 calls (unit test) |
+| 2026-10-14 | 6 | AI SDK 7 shape: `tool({ description, inputSchema: z.object(...), execute })`, `streamText({ tools, stopWhen: isStepCount(3) })` | `stopWhen` caps model steps. Changed after the final review: the last step now gets `activeTools: []` (via `prepareStep`), because a model that searched 3 times used to end with `done: tool-calls` and no answer |
 | 2026-10-14 | 6 | Agent sources are numbered across tool calls (1-5, 6-10, ...) and emitted when the stream reports the `tool-result` | the tool's `execute` runs inside the SDK, not inside our generator, so it queues the `sources` event and the relay flushes it in stream order |
 | 2026-10-14 | 6 | The agent e2e was written after the implementation (plan order), so its permission assertion was proven by the mutation above, not by a red-first run | |
 | 2026-10-14 | 6 | **Live agent check (partial).** Standalone script (same `ai` + `ai-sdk-ollama`, one fake tool, `qwen3:4b`, think on): tool call at 24 s with `{"query":"PostgreSQL default port"}`, answer finished at 76 s. In the app over socket.io: tool call at 20.8 s (`"Postgres default port"`) and 123.6 s on a second run (`"Postgres port"`), `sources` about 2 s after each call (query embedding). Neither in-app run reached the answer: the first hit my 60 s client cap (disconnect -> abort, log `Dropped 3374 reasoning characters`), the second was stopped by Claude Code because the machine ran critically low on memory | qwen3:4b does call the tool on its own and rewrites the question into a search query. Not yet seen live: a full in-app agent answer, and the RAG vs agent refusal comparison on an unanswerable question |
 | 2026-10-14 | 6 | A first 30-minute "hang" in the live check was a bug in my smoke script (it never emitted `ask`), not in the app. Ollama's log showed no `/api/chat` request at all, which pointed to the client | |
+| 2026-10-15 | review | A chat model failure (Ollama down, model not pulled, crash mid-answer) now reaches the client as `Chat model <name> unavailable` (503 text) instead of `Internal error`. `relay` maps every non-abort error that is not already an `HttpException`; `onError` on `streamText` stops the SDK's own `console.error`, so each failure is logged once | spec section 9 row "Ollama unreachable / model error -> 503". The likeliest first-run mistake (`CHAT_MODEL=qwen3:8b` not pulled) used to show nothing useful in the UI |
+| 2026-10-15 | review | Agent mode: a failing search tool now ends the turn with the search error (e.g. `Embedding service unavailable`), like RAG mode. Invalid tool calls (input outside the schema) are hidden from the client; the SDK sends the error back to the model, which may try again | before, a `tool-error` part was ignored: the model got the raw error text and could answer "I do not know", so the user blamed the documents |
+| 2026-10-15 | review | `.env.example` has an empty `JWT_SECRET`; a unit test reads the file and checks it cannot boot | the old placeholder was 42 characters, passed `min(32)`, and was public: anyone on the LAN could sign an admin token. **If your own `.env` was copied from the old example, replace the secret** |
+| 2026-10-15 | review | Multer `defParamCharset: 'utf8'` | multer decodes the filename as latin1 by default: `ghi-chú.txt` was stored as `ghi-chÃº.txt` (e2e, red first) |
+| 2026-10-15 | review | Removed the gateway's own `ValidationPipe` (`@UsePipes` with a `WsException` factory) | it never produced an error: global `APP_PIPE` runs on gateways and fails first with `BadRequestException`, which `WsExceptionFilter` already maps. Proven by mutation: with `APP_PIPE` removed, an empty question went through to search (`sources` instead of `error`) |
 
 ## Risks checked
 
@@ -83,7 +88,7 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | R3 ESM + TypeORM circular relations | not reachable: no relations |
 | R4 vector round-trip | **PASS** - TypeORM 1.1 writes `number[]` into `vector(768)` with no transformer (e2e: chunks have embeddings; a 767-length array is rejected by Postgres) |
 | R5 Docker 29 + Testcontainers | **PASS** - Docker server 29.4.0, `@testcontainers/postgresql` 12.2.1 started `pgvector/pgvector:pg16` with no API-version pin (springboot-rag's docker-java needed `api.version=1.44`; Node Testcontainers uses a different client) |
-| R6 HNSW + filter | **Handled.** pgvector is 0.8.2, so `SET LOCAL hnsw.iterative_scan = strict_order` (inside an explicit transaction) is supported. On the dev DB (40 chunks) the planner picks seq scan + sort, even with `enable_seqscan=off`; with `enable_sort=off` too it shows `Nested Loop -> Index Scan using chunks_embedding_hnsw_idx`, so the query shape can use HNSW once the table is large. e2e "fills topK when most nearby chunks are hidden" passes (60 hidden chunks, topK 3) |
+| R6 HNSW + filter | **Handled.** pgvector is 0.8.2, so `SET LOCAL hnsw.iterative_scan = strict_order` (inside an explicit transaction) is supported. On the dev DB (40 chunks) the planner picks seq scan + sort, even with `enable_seqscan=off`; with `enable_sort=off` too it shows `Nested Loop -> Index Scan using chunks_embedding_hnsw_idx`, so the query shape can use HNSW once the table is large. e2e "fills topK when most nearby chunks are hidden" passes (60 hidden chunks, topK 3). **Caveat (final review):** at that size the planner seq-scans, so this e2e also passes without `iterative_scan`; it does not prove the setting. Evidence for R6 is the EXPLAIN above only |
 | R7 AI SDK 7 names | **PASS** - `instructions`, `isStepCount`, `MockLanguageModelV4` (read from types). `fullStream` parts seen at runtime: `start`, `start-step`, `text-start`, `text-delta` (`text`), `reasoning-delta` (`text`), `finish` (`finishReason`, `totalUsage`). After `abort()` the stream emits an `abort` part and the loop ends normally, no throw |
 | R8 qwen3 reasoning | **PASS with `CHAT_THINK=true`** - reasoning arrives as `reasoning-delta` parts and is dropped (10,734 characters on one question). With `CHAT_THINK=false` qwen3 still reasons and it leaks into the answer text (ends in `</think>`) |
 
@@ -122,6 +127,7 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | Cancelling work | `Future.cancel` / thread interrupt, often ignored by blocking I/O | one `AbortController`; its `signal` goes into `streamText`, which hands it to the model call (seen in the mock's `doStreamCalls`) |
 | WebSocket auth | `HandshakeInterceptor` / STOMP `ChannelInterceptor` | socket.io namespace middleware (`namespace.use`) in `afterInit`; HTTP guards never see the handshake |
 | Errors per transport | `@ControllerAdvice` for HTTP, `@MessageExceptionHandler` for STOMP | one `ExceptionFilter` per transport: `switchToHttp()` vs `switchToWs()` |
+| Global cross-cutting on WebSockets | MVC interceptors and `@ControllerAdvice` do not touch STOMP; it has its own `ChannelInterceptor` | `APP_PIPE`, `APP_GUARD`, `APP_INTERCEPTOR` DO run on gateway handlers (so global guards must let `ws` contexts pass); `APP_FILTER` does NOT, so a gateway needs `@UseFilters` |
 | Bean / provider scope | `@Scope("request")` proxies only that bean | `Scope.REQUEST` bubbles up: every dependent becomes request-scoped too |
 | Static files | `src/main/resources/static` served by default | `ServeStaticModule.forRoot({ rootPath, serveRoot })`; not covered by the global guard |
 | LLM tool calling | Spring AI `@Tool` methods, or a hand-written loop | AI SDK `tool({ inputSchema: zod, execute })`; the SDK runs the call / result / next-step loop, `stopWhen` caps it |
@@ -135,3 +141,14 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 - `@nestjs/throttler` rate limiting.
 - Queues (BullMQ + Redis) and a Nest monorepo with an ingest worker.
 - Reranker, Qdrant, GraphRAG, eval harness (already in springboot-rag).
+
+## Final review (2026-10-15)
+
+A fresh reviewer (opus) read the whole project. Verdict "with fixes": 0 Critical, 5 Important, 7 Minor. I moved one Minor up (the agent's 3rd step gave no answer), so 6 were fixed, each test red first (decision rows dated 2026-10-15 above). Minors not fixed:
+
+- HNSW topK e2e cannot fail at 64 rows (seq scan); see the R6 caveat.
+- `ask` with `history: null` passes `@IsOptional`, then `null.slice` gives `Internal error`.
+- A duplicate filename gets 409 only after every chunk is embedded (minutes for a big file).
+- `EMBEDDING_DIM` accepts any number, but the column is `vector(768)`.
+- `RolesGuard` lets every non-HTTP context pass, so a future `@Roles` on a socket handler would be ignored silently.
+- Fence gaps: `</context foo>` is not neutralized, and a shared document can fake `[n]` passage markers.

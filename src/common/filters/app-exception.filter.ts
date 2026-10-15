@@ -32,7 +32,9 @@ export class AppExceptionFilter extends BaseExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     if (host.getType() !== 'http') {
-      // Gateways have their own filter; reaching this line means one was forgotten.
+      // Global filters never reach gateways (Nest builds their filter context without global ones),
+      // so a gateway without @UseFilters gets Nest's built-in `exception` event, not this line.
+      // The check stays only as a guard in case another transport is added later.
       this.logger.error('Non-HTTP error reached the HTTP filter', exception instanceof Error ? exception.stack : String(exception));
       return;
     }

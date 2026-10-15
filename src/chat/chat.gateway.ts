@@ -1,4 +1,4 @@
-import { UseFilters, UsePipes, ValidationPipe } from '@nestjs/common';
+import { UseFilters } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import {
   ConnectedSocket,
@@ -9,7 +9,6 @@ import {
   type OnGatewayDisconnect,
   type OnGatewayInit,
 } from '@nestjs/websockets';
-import type { ValidationError } from 'class-validator';
 // Type-only on purpose: a value import would put the Socket class into decorator metadata, and the
 // global ValidationPipe (transform: true) would then try to rebuild the socket as if it were a DTO.
 import type { Namespace, Socket } from 'socket.io';
@@ -18,18 +17,10 @@ import { WsExceptionFilter } from '../common/filters/ws-exception.filter.js';
 import { ChatService } from './chat.service.js';
 import { AskDto } from './dto/ask.dto.js';
 
-const flatten = (errors: ValidationError[]): string[] =>
-  errors.flatMap((error) => [...Object.values(error.constraints ?? {}), ...flatten(error.children ?? [])]);
-
-const wsValidationPipe = new ValidationPipe({
-  whitelist: true,
-  forbidNonWhitelisted: true,
-  transform: true,
-  exceptionFactory: (errors) => new WsException(flatten(errors).join('; ') || 'Invalid payload'),
-});
-
+// No @UsePipes here: the global APP_PIPE (AppModule) already validates @MessageBody, because
+// global pipes, guards and interceptors also run on gateways. Global filters do NOT, so the
+// gateway names its own filter.
 @UseFilters(WsExceptionFilter)
-@UsePipes(wsValidationPipe)
 @WebSocketGateway({ namespace: 'chat' })
 export class ChatGateway implements OnGatewayInit, OnGatewayDisconnect {
   private readonly running = new Map<string, AbortController>();

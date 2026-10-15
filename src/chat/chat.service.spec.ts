@@ -1,5 +1,5 @@
 import { ServiceUnavailableException } from '@nestjs/common';
-import { mockChatModel, textParts, toolCallParts } from '../../test/support/mock-chat-model.js';
+import { failingChatModel, mockChatModel, textParts, toolCallParts } from '../../test/support/mock-chat-model.js';
 import type { AuthUser } from '../auth/auth-user.js';
 import type { SearchService } from '../search/search.service.js';
 import type { ChunkMatch } from '../search/search.types.js';
@@ -86,6 +86,13 @@ describe('ChatService (rag mode)', () => {
       ServiceUnavailableException,
     );
   });
+
+  it('turns a chat model failure into a 503 that names the model', async () => {
+    const model = failingChatModel(new Error('model "qwen3:8b" not found, try pulling it first'));
+    const error = await collect(ask(new ChatService(fakeSearch(matches).search, model))).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect((error as Error).message).toBe('Chat model qwen3:8b unavailable');
+  });
 });
 
 describe('ChatService (agent mode)', () => {
@@ -120,6 +127,49 @@ describe('ChatService (agent mode)', () => {
     const model = mockChatModel([toolCallParts('searchDocuments', { query: 'again' })]);
     const events = await collect(askAgent(new ChatService(fakeSearch(matches).search, model)));
     expect(model.doStreamCalls).toHaveLength(3);
-    expect(events.at(-1)).toMatchObject({ type: 'done', finishReason: 'tool-calls' });
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+  });
+
+  it('takes the tools away on the last step, so the model has to answer', async () => {
+    const model = mockChatModel([
+      toolCallParts('searchDocuments', { query: 'a' }),
+      toolCallParts('searchDocuments', { query: 'b' }),
+      textParts(['answer [1].']),
+    ]);
+    await collect(askAgent(new ChatService(fakeSearch(matches).search, model)));
+    expect(model.doStreamCalls[0].tools?.map((t) => t.name)).toEqual(['searchDocuments']);
+    expect(model.doStreamCalls[2].tools ?? []).toEqual([]);
+  });
+
+  it('ends the turn with the search error instead of letting the model answer without passages', async () => {
+    const { search } = fakeSearch(new ServiceUnavailableException('Embedding service unavailable'));
+    const model = mockChatModel([toolCallParts('searchDocuments', { query: 'zebracorn' }), textParts(['I do not know.'])]);
+    await expect(collect(askAgent(new ChatService(search, model)))).rejects.toThrow('Embedding service unavailable');
+    expect(model.doStreamCalls).toHaveLength(1);
+  });
+
+  it('keeps an unexpected search error away from the model', async () => {
+    const { search } = fakeSearch(new Error('connect ECONNREFUSED 10.0.0.5:5432'));
+    const model = mockChatModel([toolCallParts('searchDocuments', { query: 'zebracorn' }), textParts(['x'])]);
+    await expect(collect(askAgent(new ChatService(search, model)))).rejects.toThrow('ECONNREFUSED');
+    expect(model.doStreamCalls).toHaveLength(1);
+  });
+
+  it('hides an invalid tool call from the client and lets the model try again', async () => {
+    const model = mockChatModel([
+      toolCallParts('searchDocuments', { query: '' }),
+      toolCallParts('searchDocuments', { query: 'zebracorn' }),
+      textParts(['It is in [1].']),
+    ]);
+    const events = await collect(askAgent(new ChatService(fakeSearch(matches).search, model)));
+    expect(events.map((e) => e.type)).toEqual(['toolCall', 'sources', 'token', 'done']);
+    expect(events[0]).toMatchObject({ input: { query: 'zebracorn' } });
+  });
+
+  it('turns a chat model failure into a 503 in agent mode too', async () => {
+    const model = failingChatModel(new Error('fetch failed'));
+    await expect(collect(askAgent(new ChatService(fakeSearch(matches).search, model)))).rejects.toThrow(
+      'Chat model qwen3:8b unavailable',
+    );
   });
 });

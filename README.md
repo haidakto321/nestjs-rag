@@ -10,7 +10,9 @@ Prerequisites: Node 26.10.0 (`.nvmrc`; `engines` also accepts 22.22.3+ and 24.15
     docker compose up -d     # Postgres + pgvector on host port 5434
     ollama pull nomic-embed-text
     ollama pull qwen3:8b     # or any chat model; set CHAT_MODEL to match (for example qwen3:4b)
-    cp .env.example .env     # set JWT_SECRET (32+ chars); ADMIN_EMAIL / ADMIN_PASSWORD seed the first admin
+    cp .env.example .env     # JWT_SECRET is empty on purpose: the app refuses to start until you set it
+    node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"   # paste as JWT_SECRET
+                             # ADMIN_EMAIL / ADMIN_PASSWORD (optional) seed the first admin
     npm install
     npm run start:dev
 

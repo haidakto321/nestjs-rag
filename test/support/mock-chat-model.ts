@@ -41,6 +41,16 @@ export function toolCallParts(toolName: string, input: unknown): StreamPart[] {
   ];
 }
 
+/** A model whose call fails before streaming, like Ollama being down or the model not being pulled. */
+export function failingChatModel(error: Error, modelId = 'qwen3:8b'): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
+    modelId,
+    doStream: async () => {
+      throw error;
+    },
+  });
+}
+
 /** Streams `steps` in order, one per model call; the last step repeats. */
 export function mockChatModel(steps: StreamPart[][], chunkDelayInMs: number | null = null): MockLanguageModelV4 {
   let call = 0;
