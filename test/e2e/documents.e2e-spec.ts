@@ -7,6 +7,7 @@ import type { Visibility } from '../../src/documents/entities/document.entity.js
 import { bearer, createAdminAndLogin, registerAndLogin } from '../support/auth-helpers.js';
 import { createTestApp } from '../support/create-test-app.js';
 import { uploadText } from '../support/document-helpers.js';
+import type { FakeEmbeddingProvider } from '../support/fake-embedding.provider.js';
 import { resetDatabase } from '../support/reset-database.js';
 
 const countDocuments = async (app: INestApplication): Promise<number> =>
@@ -62,6 +63,15 @@ describe('documents upload (e2e)', () => {
     const dup = await uploadText(app, alice, 'notes.md', '# B\ntext').expect(409);
     expect(dup.body.message).toBe('You already have a document with this filename');
     await uploadText(app, bob, 'notes.md', '# C\ntext').expect(201);
+  });
+
+  it('refuses a duplicate filename before spending time on embeddings', async () => {
+    await uploadText(app, alice, 'big.md', '# A\ntext').expect(201);
+    const embeddings = app.get<FakeEmbeddingProvider>(EMBEDDING_PROVIDER);
+    const callsBefore = embeddings.calls;
+    const dup = await uploadText(app, alice, 'big.md', '# B\ntext').expect(409);
+    expect(dup.body.message).toBe('You already have a document with this filename');
+    expect(embeddings.calls).toBe(callsBefore);
   });
 
   it.each([

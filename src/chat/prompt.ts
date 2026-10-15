@@ -13,15 +13,20 @@ export const INSTRUCTIONS = [
   'If the passages do not contain the answer, say you do not know based on the available documents.',
 ].join(' ');
 
-/** A passage that contains "</context>" could close the fence early; this breaks such tags. */
+/** A passage that contains "</context>" (even "</context foo>") could close the fence early; this breaks such tags. */
 export function neutralizeFence(text: string): string {
-  return text.replace(/<(\s*\/?\s*context\s*)>/gi, '&lt;$1>');
+  return text.replace(/<(\s*\/?\s*context\b[^>]*)>/gi, '&lt;$1>');
+}
+
+/** A line starting with "[3]" would look like one of our passage headers, so a document could fake a source. */
+function neutralizeMarkers(text: string): string {
+  return text.replace(/^(\s*)\[(\d+)\]/gm, '$1($2)');
 }
 
 export function buildContextBlock(matches: ChunkMatch[], startAt = 1): string {
   const passages = matches.map((match, i) => {
     const where = match.headingPath ? `${match.title} > ${match.headingPath}` : match.title;
-    return `[${startAt + i}] ${neutralizeFence(where)}\n${neutralizeFence(match.content)}`;
+    return `[${startAt + i}] ${neutralizeFence(where)}\n${neutralizeFence(neutralizeMarkers(match.content))}`;
   });
   return `<context>\n${passages.join('\n\n')}\n</context>`;
 }

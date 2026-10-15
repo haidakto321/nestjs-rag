@@ -10,7 +10,7 @@ import { BaseExceptionFilter } from '@nestjs/core';
 import type { Request, Response } from 'express';
 import { EntityNotFoundError, QueryFailedError } from 'typeorm';
 
-const CONSTRAINT_MESSAGES: Record<string, string> = {
+export const CONSTRAINT_MESSAGES: Record<string, string> = {
   users_email_key: 'Email is already registered',
   documents_owner_filename_key: 'You already have a document with this filename',
 };

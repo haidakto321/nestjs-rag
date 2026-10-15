@@ -78,6 +78,11 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | 2026-10-15 | review | `.env.example` has an empty `JWT_SECRET`; a unit test reads the file and checks it cannot boot | the old placeholder was 42 characters, passed `min(32)`, and was public: anyone on the LAN could sign an admin token. **If your own `.env` was copied from the old example, replace the secret** |
 | 2026-10-15 | review | Multer `defParamCharset: 'utf8'` | multer decodes the filename as latin1 by default: `ghi-chú.txt` was stored as `ghi-chÃº.txt` (e2e, red first) |
 | 2026-10-15 | review | Removed the gateway's own `ValidationPipe` (`@UsePipes` with a `WsException` factory) | it never produced an error: global `APP_PIPE` runs on gateways and fails first with `BadRequestException`, which `WsExceptionFilter` already maps. Proven by mutation: with `APP_PIPE` removed, an empty question went through to search (`sources` instead of `error`) |
+| 2026-10-15 | minors | `AskDto.history` and `mode` lost `@IsOptional` | a missing field keeps its class default (`[]`, `rag`) because `plainToInstance` builds the class first; `@IsOptional` only added a hole: `null` skipped validation and crashed later as `Internal error` |
+| 2026-10-15 | minors | Upload checks `existsBy({ ownerId, filename })` before embedding | a duplicate got its 409 only after every chunk was embedded. The unique constraint stays the real guard for two uploads at the same moment; the message comes from the same `CONSTRAINT_MESSAGES` map |
+| 2026-10-15 | minors | `EMBEDDING_DIM` must be 768 | the column is `vector(768)`; a 1024-dim model used to pass the health check and then fail every upload with 500 |
+| 2026-10-15 | minors | `RolesGuard` reads the user from `client.data.user` on sockets and refuses `@Roles` handlers on any other transport | it used to return true for every non-HTTP context, so `@Roles` on a socket handler was skipped silently |
+| 2026-10-15 | minors | Prompt fence also breaks `<context foo>`-style tags, and a content line starting with `[n]` becomes `(n)` | a shared document could close the fence with extra text in the tag, or fake a passage header so the model cites a trusted source for injected text |
 
 ## Risks checked
 
@@ -88,7 +93,7 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | R3 ESM + TypeORM circular relations | not reachable: no relations |
 | R4 vector round-trip | **PASS** - TypeORM 1.1 writes `number[]` into `vector(768)` with no transformer (e2e: chunks have embeddings; a 767-length array is rejected by Postgres) |
 | R5 Docker 29 + Testcontainers | **PASS** - Docker server 29.4.0, `@testcontainers/postgresql` 12.2.1 started `pgvector/pgvector:pg16` with no API-version pin (springboot-rag's docker-java needed `api.version=1.44`; Node Testcontainers uses a different client) |
-| R6 HNSW + filter | **Handled.** pgvector is 0.8.2, so `SET LOCAL hnsw.iterative_scan = strict_order` (inside an explicit transaction) is supported. On the dev DB (40 chunks) the planner picks seq scan + sort, even with `enable_seqscan=off`; with `enable_sort=off` too it shows `Nested Loop -> Index Scan using chunks_embedding_hnsw_idx`, so the query shape can use HNSW once the table is large. e2e "fills topK when most nearby chunks are hidden" passes (60 hidden chunks, topK 3). **Caveat (final review):** at that size the planner seq-scans, so this e2e also passes without `iterative_scan`; it does not prove the setting. Evidence for R6 is the EXPLAIN above only |
+| R6 HNSW + filter | **Handled.** pgvector is 0.8.2, so `SET LOCAL hnsw.iterative_scan = strict_order` (inside an explicit transaction) is supported. On the dev DB (40 chunks) the planner picks seq scan + sort, even with `enable_seqscan=off`; with `enable_sort=off` too it shows `Nested Loop -> Index Scan using chunks_embedding_hnsw_idx`, so the query shape can use HNSW once the table is large. e2e "fills topK when most nearby chunks are hidden" passes (60 hidden chunks, topK 3). **Fixed after the final review:** that first version could not fail: at 64 rows the planner seq-scans, and its hidden chunks were mostly `filler`, so Alice's chunks were the nearest anyway. The test now queries `zebracorn filler` (Bob's 60 hidden chunks are the nearest), forces the index for a fresh app with `ALTER DATABASE ... SET enable_seqscan/enable_sort = off`, asserts `chunks_embedding_hnsw_idx` in EXPLAIN, and was checked by mutation: without `iterative_scan` Alice gets 0 hits instead of 3 |
 | R7 AI SDK 7 names | **PASS** - `instructions`, `isStepCount`, `MockLanguageModelV4` (read from types). `fullStream` parts seen at runtime: `start`, `start-step`, `text-start`, `text-delta` (`text`), `reasoning-delta` (`text`), `finish` (`finishReason`, `totalUsage`). After `abort()` the stream emits an `abort` part and the loop ends normally, no throw |
 | R8 qwen3 reasoning | **PASS with `CHAT_THINK=true`** - reasoning arrives as `reasoning-delta` parts and is dropped (10,734 characters on one question). With `CHAT_THINK=false` qwen3 still reasons and it leaks into the answer text (ends in `</think>`) |
 
@@ -127,7 +132,7 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 | Cancelling work | `Future.cancel` / thread interrupt, often ignored by blocking I/O | one `AbortController`; its `signal` goes into `streamText`, which hands it to the model call (seen in the mock's `doStreamCalls`) |
 | WebSocket auth | `HandshakeInterceptor` / STOMP `ChannelInterceptor` | socket.io namespace middleware (`namespace.use`) in `afterInit`; HTTP guards never see the handshake |
 | Errors per transport | `@ControllerAdvice` for HTTP, `@MessageExceptionHandler` for STOMP | one `ExceptionFilter` per transport: `switchToHttp()` vs `switchToWs()` |
-| Global cross-cutting on WebSockets | MVC interceptors and `@ControllerAdvice` do not touch STOMP; it has its own `ChannelInterceptor` | `APP_PIPE`, `APP_GUARD`, `APP_INTERCEPTOR` DO run on gateway handlers (so global guards must let `ws` contexts pass); `APP_FILTER` does NOT, so a gateway needs `@UseFilters` |
+| Global cross-cutting on WebSockets | MVC interceptors and `@ControllerAdvice` do not touch STOMP; it has its own `ChannelInterceptor` | `APP_PIPE`, `APP_GUARD`, `APP_INTERCEPTOR` DO run on gateway handlers (so global guards must handle `ws` contexts: JwtAuthGuard lets them pass (the handshake already checked the token), RolesGuard reads `client.data.user`); `APP_FILTER` does NOT, so a gateway needs `@UseFilters` |
 | Bean / provider scope | `@Scope("request")` proxies only that bean | `Scope.REQUEST` bubbles up: every dependent becomes request-scoped too |
 | Static files | `src/main/resources/static` served by default | `ServeStaticModule.forRoot({ rootPath, serveRoot })`; not covered by the global guard |
 | LLM tool calling | Spring AI `@Tool` methods, or a hand-written loop | AI SDK `tool({ inputSchema: zod, execute })`; the SDK runs the call / result / next-step loop, `stopWhen` caps it |
@@ -144,11 +149,4 @@ Plan: `docs/superpowers/plans/2026-10-14-nestjs-rag.md`.
 
 ## Final review (2026-10-15)
 
-A fresh reviewer (opus) read the whole project. Verdict "with fixes": 0 Critical, 5 Important, 7 Minor. I moved one Minor up (the agent's 3rd step gave no answer), so 6 were fixed, each test red first (decision rows dated 2026-10-15 above). Minors not fixed:
-
-- HNSW topK e2e cannot fail at 64 rows (seq scan); see the R6 caveat.
-- `ask` with `history: null` passes `@IsOptional`, then `null.slice` gives `Internal error`.
-- A duplicate filename gets 409 only after every chunk is embedded (minutes for a big file).
-- `EMBEDDING_DIM` accepts any number, but the column is `vector(768)`.
-- `RolesGuard` lets every non-HTTP context pass, so a future `@Roles` on a socket handler would be ignored silently.
-- Fence gaps: `</context foo>` is not neutralized, and a shared document can fake `[n]` passage markers.
+A fresh reviewer (opus) read the whole project. Verdict "with fixes": 0 Critical, 5 Important, 7 Minor. I moved one Minor up (the agent's 3rd step gave no answer), so 6 were fixed first, each test red first (rows tagged `review` above). The other 6 Minors were fixed next (rows tagged `minors`, plus the R6 row). Nothing from the review is left open.

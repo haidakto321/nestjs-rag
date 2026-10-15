@@ -1,9 +1,10 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, type FindOptionsWhere, type Repository } from 'typeorm';
 import { EMBEDDING_PROVIDER } from '../ai/ai.tokens.js';
 import type { EmbeddingProvider } from '../ai/embedding/embedding-provider.js';
 import type { AuthUser } from '../auth/auth-user.js';
+import { CONSTRAINT_MESSAGES } from '../common/filters/app-exception.filter.js';
 import { chunkText, extractTitle, stripExtension, type TextKind } from './chunker.js';
 import { ChunkEntity } from './entities/chunk.entity.js';
 import { DocumentEntity, type Visibility } from './entities/document.entity.js';
@@ -37,6 +38,12 @@ export class DocumentsService {
     const pieces = chunkText(text, kind);
     if (pieces.length === 0) throw new BadRequestException('The file has no text to index');
     const title = kind === 'markdown' ? extractTitle(text, file.originalname) : stripExtension(file.originalname);
+
+    // Cheap early answer, so a duplicate does not wait minutes for embeddings first. Two uploads at
+    // the same moment can both pass this check; the unique constraint still stops the second one.
+    if (await this.documents.existsBy({ ownerId: user.id, filename: file.originalname })) {
+      throw new ConflictException(CONSTRAINT_MESSAGES.documents_owner_filename_key);
+    }
 
     // Slow network work first, outside any transaction, so no transaction waits on Ollama.
     const vectors = await this.embeddings.embed(pieces.map((piece) => piece.content));

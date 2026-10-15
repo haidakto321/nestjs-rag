@@ -17,6 +17,7 @@ function context(handler: () => void, user?: AuthUser, type = 'http'): Execution
     getHandler: () => handler,
     getClass: () => Dummy,
     switchToHttp: () => ({ getRequest: () => ({ user }) }),
+    switchToWs: () => ({ getClient: () => ({ data: { user } }) }),
   } as unknown as ExecutionContext;
 }
 
@@ -41,7 +42,13 @@ describe('RolesGuard', () => {
     expect(guard.canActivate(context(Dummy.prototype.adminOnly))).toBe(false);
   });
 
-  it('ignores non-HTTP contexts', () => {
-    expect(guard.canActivate(context(Dummy.prototype.adminOnly, undefined, 'ws'))).toBe(true);
+  it('checks roles on socket handlers too, using the user from the handshake', () => {
+    expect(guard.canActivate(context(Dummy.prototype.adminOnly, alice, 'ws'))).toBe(false);
+    expect(guard.canActivate(context(Dummy.prototype.adminOnly, root, 'ws'))).toBe(true);
+    expect(guard.canActivate(context(Dummy.prototype.open, alice, 'ws'))).toBe(true);
+  });
+
+  it('fails closed on other transports when a handler needs a role', () => {
+    expect(guard.canActivate(context(Dummy.prototype.adminOnly, root, 'rpc'))).toBe(false);
   });
 });

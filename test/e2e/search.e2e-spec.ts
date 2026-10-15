@@ -1,10 +1,12 @@
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { DataSource } from 'typeorm';
 import { EMBEDDING_PROVIDER } from '../../src/ai/ai.tokens.js';
+import { readableParams, readableSql } from '../../src/documents/visibility.js';
 import { bearer, createAdminAndLogin, registerAndLogin } from '../support/auth-helpers.js';
 import { createTestApp } from '../support/create-test-app.js';
 import { uploadText } from '../support/document-helpers.js';
-import type { FakeEmbeddingProvider } from '../support/fake-embedding.provider.js';
+import { fakeVector, type FakeEmbeddingProvider } from '../support/fake-embedding.provider.js';
 import { resetDatabase } from '../support/reset-database.js';
 
 type HitsBody = { hits: Array<{ documentId: string }> };
@@ -96,7 +98,8 @@ describe('search (e2e)', () => {
   });
 
   // Keep this test last: it adds documents that the tests above do not expect.
-  it('fills topK even when most nearby chunks are hidden from the caller', async () => {
+  it('fills topK even when the nearest chunks are all hidden from the caller', async () => {
+    // 60 chunks of Bob's, mostly "filler", so they sit closer to the query than anything Alice can read.
     const hidden = Array.from(
       { length: 60 },
       (_, i) => `zebracorn hidden paragraph ${i} ${'filler '.repeat(195)}`,
@@ -104,8 +107,37 @@ describe('search (e2e)', () => {
     const bobMany = (await uploadText(app, bob, 'bob-many.txt', hidden).expect(201)).body;
     expect(bobMany.chunkCount).toBe(60);
     await uploadText(app, alice, 'zoo2.md', '# Zoo two\nAnother zebracorn note.', 'public').expect(201);
-    const res = await search(alice, { q: 'zebracorn hidden paragraph', mode: 'vector', topK: 3 }).expect(200);
-    expect(res.body.hits).toHaveLength(3);
-    expect(docIds(res.body)).not.toContain(bobMany.id);
+    const q = 'zebracorn filler';
+
+    // On a table this small the planner picks a seq scan, which never misses rows, so the test would
+    // pass with or without iterative scan. Force the HNSW index, the way a big table would use it, for
+    // a fresh app: only new connections pick up ALTER DATABASE settings.
+    const db = app.get(DataSource);
+    const [{ name }] = await db.query('SELECT current_database() AS name');
+    await db.query(`ALTER DATABASE "${name}" SET enable_seqscan = off`);
+    await db.query(`ALTER DATABASE "${name}" SET enable_sort = off`);
+    const indexed = await createTestApp();
+    try {
+      const [{ id }] = await db.query(`SELECT id FROM users WHERE email = 'alice@test.io'`);
+      // Same query shape as SearchRepository.vector, to prove the index is really in the plan.
+      const plan: Array<{ 'QUERY PLAN': string }> = await indexed.get(DataSource).query(
+        `EXPLAIN SELECT c.id FROM chunks c JOIN documents d ON d.id = c.document_id
+          WHERE ${readableSql('d', 2)} ORDER BY c.embedding <=> $1::vector LIMIT $4`,
+        [`[${fakeVector(q).join(',')}]`, ...readableParams({ id, email: 'alice@test.io', role: 'user' }), 3],
+      );
+      expect(plan.map((row) => row['QUERY PLAN']).join('\n')).toContain('chunks_embedding_hnsw_idx');
+
+      const res = await request(indexed.getHttpServer())
+        .get('/search')
+        .query({ q, mode: 'vector', topK: 3 })
+        .set(bearer(alice))
+        .expect(200);
+      expect(res.body.hits).toHaveLength(3);
+      expect(docIds(res.body)).not.toContain(bobMany.id);
+    } finally {
+      await db.query(`ALTER DATABASE "${name}" RESET enable_seqscan`);
+      await db.query(`ALTER DATABASE "${name}" RESET enable_sort`);
+      await indexed.close();
+    }
   });
 });

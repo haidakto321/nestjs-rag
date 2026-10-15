@@ -31,6 +31,10 @@ describe('validateEnv', () => {
     expect(() => validateEnv(example)).toThrow(/JWT_SECRET/);
   });
 
+  it('rejects an EMBEDDING_DIM the vector(768) column cannot store', () => {
+    expect(() => validateEnv({ ...base, EMBEDDING_DIM: '1024' })).toThrow(/EMBEDDING_DIM: must be 768/);
+  });
+
   it('rejects a non-numeric port', () => {
     expect(() => validateEnv({ ...base, DB_PORT: 'abc' })).toThrow(/DB_PORT/);
   });

@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsIn, IsOptional, IsString, Length, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsIn, IsString, Length, ValidateNested } from 'class-validator';
 import { trim } from '../../common/transforms.js';
 import { CHAT_MODES, type ChatMode } from '../chat-events.js';
 
@@ -19,14 +19,13 @@ export class AskDto {
   question: string;
 
   // History lives on the client (stateless server), capped to keep prompts bounded.
-  @IsOptional()
+  // No @IsOptional: a missing field keeps the default below, and @IsOptional would also let null through.
   @IsArray()
   @ArrayMaxSize(10)
   @ValidateNested({ each: true })
   @Type(() => ChatTurnDto)
   history: ChatTurnDto[] = [];
 
-  @IsOptional()
   @IsIn(CHAT_MODES)
   mode: ChatMode = 'rag';
 }

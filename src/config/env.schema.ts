@@ -15,7 +15,8 @@ export const envSchema = z.object({
   JWT_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   OLLAMA_BASE_URL: z.url().default('http://localhost:11434'),
   EMBEDDING_MODEL: z.string().min(1).default('nomic-embed-text'),
-  EMBEDDING_DIM: z.coerce.number().int().positive().default(768),
+  // Fixed by the schema: chunks.embedding is vector(768). Changing models means a new migration too.
+  EMBEDDING_DIM: z.coerce.number().refine((dim) => dim === 768, 'must be 768 (chunks.embedding is vector(768))').default(768),
   CHAT_MODEL: z.string().min(1).default('qwen3:8b'),
   CHAT_THINK: z.stringbool().default(true),
   UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(1_048_576),
